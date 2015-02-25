@@ -12,10 +12,8 @@
 ;;; Code:
 
 (require 'dbus)
-(require 'dbus-introspection)
-(require 'dbus-proxy)
+(require 'dbus-codegen)
 (require 'org)
-(require 'org-exp)
 (require 'time-stamp)
 ;;TODO this doesnt work out of the box for uninstalled inkscape
 (defcustom inkscape-path
@@ -37,9 +35,9 @@ then we have buffer local instances.")
   ;;when it should be:
   ;;          "#<class org.freedesktop.DBus.Introspectable-org.freedesktop.DBus.Properties-org.inkscape.application>"
   ;;I have no idea why, thus this assert
-  (assert (equal (object-class-name inkscape-application)
-                 "#<class org.freedesktop.DBus.Introspectable-org.freedesktop.DBus.Properties-org.inkscape.application>")
-          "inkscape-application class is not correct. please inspect.")
+  ;; (assert (equal (object-class-name inkscape-application)
+  ;;                "#<class org.freedesktop.DBus.Introspectable-org.freedesktop.DBus.Properties-org.inkscape.application>")
+  ;;         "inkscape-application class is not correct. please inspect.")
   inkscape-application
   )
 
@@ -84,13 +82,13 @@ previous proxy creation run failed for some reason."
 (defun inkscape-make-verb-method (name doc)
   "Create a Verb wrapper.  NAME is the verb DOC a docstring."
   (let
-      ((method-name (intern (inkscape-transform-method-name "inkverb" name))))
-    (eval `(defmethod ,method-name
+      ((method-name (intern (format "inkverb-%s"
+				    (dbus-codegen-transform-name name)))))
+    (eval `(cl-defmethod ,method-name
              ;;BUG the next line fails in a fresh Emacs.
              ;;  but works when  inkscape-register-proxies is called.
              ;;  and then buffer eval works. hmm.
-             ((this    org.freedesktop.DBus.Introspectable-org.freedesktop.DBus.Properties-org.inkscape.document
-                       ))
+             ((this inkdoc))
              ,doc
              (inkdoc-call-verb this ,name))
           ;;defmethod doesnt support interactive declarations so i add it afterwards
@@ -99,28 +97,22 @@ previous proxy creation run failed for some reason."
 
 ;;dbus proxies
 
-(defun inkscape-transform-method-name (prefix name)
-  "Transform NAME. prepend PREFIX.
-PREFIX can be inkapp- or inkdoc- for
- example. un-camelcase. switch underscore to dash."
-  (concat prefix "-" (replace-regexp-in-string "_" "-" (dbus-proxy-transform-camel-case name))))
-
 (defun inkscape-app-dbus-proxy-create ()
   "Create dbus-proxy to talk to inkscape app."
-  (let* ((dbus-proxy-transform-method-name-function (lambda (name) (inkscape-transform-method-name "inkapp" name)))
-         (obj (dbus-proxy-make-remote-proxy
-               :session "org.inkscape"
-               "/org/inkscape/application" t)))
-    obj))
+  (make-dbus-proxy "inkapp"
+		   :session "org.inkscape"
+		   "/org/inkscape/application"
+		   "org.inkscape.application"
+		   :transform-name #'dbus-codegen-transform-name))
 
 (defun inkscape-document-dbus-proxy-create (desktop &optional session)
   "Create dbus-proxy to talk to inkscape DESKTOP.
 slow the first time, then not so bad."
-  (let* ((dbus-proxy-transform-method-name-function (lambda (name) (inkscape-transform-method-name "inkdoc" name)))
-         (obj (dbus-proxy-make-remote-proxy
-               :session (or session "org.inkscape")
-               (concat "/org/inkscape/" desktop) t)))
-    obj))
+  (make-dbus-proxy "inkdoc"
+		   :session (or session "org.inkscape")
+		   (concat "/org/inkscape/" desktop)
+		   "org.inkscape.document"
+		   :transform-name #'dbus-codegen-transform-name))
 
 ;;inkscape process management
 ;;inkscape-desktop
@@ -137,7 +129,7 @@ slow the first time, then not so bad."
       (error "There already is a linked inkscape. "))
   (let ((newdesk (car (last (split-string (inkapp-desktop-new ( inkscape-application-get) ) "/")))))
     (set (make-local-variable 'inkscape-desktop-instance) (inkscape-document-dbus-proxy-create newdesk))
-    (setq inkscape-desktop-instances (acons file-name inkscape-desktop-instance inkscape-desktop-instances))
+    (setq inkscape-desktop-instances (cons (cons file-name inkscape-desktop-instance) inkscape-desktop-instances))
     ;;todo inkdoc-load doesnt like if theres no actual file
     (unless (file-exists-p file-name)
       (inkmacs-create-empty-svg file-name))
@@ -182,12 +174,12 @@ slow the first time, then not so bad."
         ;;it must be called before method definitions and it must be called again if the process connection is lost
         ;;(which is weird)
         (inkscape-register-proxies t)
-        (defmethod inkscape-desktop-alive ( (this org\.freedesktop\.DBus\.Introspectable-org\.freedesktop\.DBus\.Properties-org\.inkscape\.document))
+        (cl-defmethod inkscape-desktop-alive ((this inkdoc))
           "Check if the desktop is alive."
           ;;todo make this method actually work
-          (dbus-introspect-get-method-names  :session "org.inkscape"
-                                             (oref this object)
-                                             "org.inkscape.document"))
+          (dbus-introspect-get-method-names :session "org.inkscape"
+					    (dbus-proxy-path this)
+					    "org.inkscape.document"))
         ))
 
 )
